@@ -5,15 +5,15 @@ set -e
 MW_BRANCH=$1
 EXTENSION_NAME=$2
 
-wget https://github.com/wikimedia/mediawiki/archive/$MW_BRANCH.tar.gz -nv
+wget https://github.com/wikimedia/mediawiki/archive/"$MW_BRANCH".tar.gz -nv
 
-tar -zxf $MW_BRANCH.tar.gz
-mv mediawiki-$MW_BRANCH mediawiki
+tar -zxf "$MW_BRANCH".tar.gz
+mv mediawiki-"$MW_BRANCH" mediawiki
 
 cd mediawiki
 
 composer install
-php maintenance/install.php --dbtype sqlite --dbuser root --dbname mw --dbpath $(pwd) --pass AdminPassword WikiName AdminUser
+php maintenance/install.php --dbtype sqlite --dbuser root --dbname mw --dbpath "$(pwd)" --pass AdminPassword WikiName AdminUser
 
 cat <<EOT >> composer.local.json
 {
@@ -34,5 +34,5 @@ echo '$wgShowExceptionDetails = true;' >> LocalSettings.php
 echo '$wgShowDBErrorBacktrace = true;' >> LocalSettings.php
 echo '$wgDevelopmentWarnings = true;' >> LocalSettings.php
 
-echo 'wfLoadExtension( "'$EXTENSION_NAME'" );' >> LocalSettings.php
+echo "wfLoadExtension( '$EXTENSION_NAME' );" >> LocalSettings.php
 tail -n5 LocalSettings.php
