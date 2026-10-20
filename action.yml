@@ -1,36 +1,79 @@
 name: 'Setup MediaWiki Action'
 author: Jeroen De Dauw
-description: 'Downloads and installs MediaWiki into mediawiki/ so tests and CI can be run. Includes caching'
+description: 'Installs MediaWiki with the calling repository as an extension, for tests and static analysis'
 
 inputs:
-  version:
-    description: 'MediaWiki version. Needs to be available in git. Examples: master, REL1_35, 1.34.2'
-    required: false
-    default: 'master'
-  extension:
-    description: 'Name of MediaWiki extension to LOAD in LocalSettings. This action does not install the extension.'
+  mw-version:
+    description: 'MediaWiki branch, such as REL1_43 or master. Dependencies are cloned at the same branch.'
     required: true
+  extension:
+    description: 'Name of the extension. The calling repository is checked out as this extension and loaded.'
+    required: true
+  dependencies:
+    description: 'Wikimedia extensions to clone, separated by whitespace. Load them through settings.'
+    required: false
+    default: ''
+  settings:
+    description: 'PHP appended to LocalSettings.php before the extension is loaded'
+    required: false
+    default: ''
 
 runs:
   using: 'composite'
   steps:
-    - name: Cache MediaWiki
-      id: cache-mediawiki
-      uses: actions/cache@v2
-      with:
-        path: |
-          mediawiki
-          !mediawiki/extensions/
-          !mediawiki/vendor/
-        key: mediawiki-cache
+    # MediaWiki pins development tools that can have security advisories, which would otherwise stop Composer
+    - name: Allow Composer packages with security advisories
+      shell: bash
+      run: composer config --global audit.block-insecure false
 
-    - name: Cache Composer cache
-      uses: actions/cache@v2
+    - name: Compute MediaWiki cache key
+      id: cache-key
+      shell: bash
+      env:
+        MW_VERSION: ${{ inputs.mw-version }}
+        EXTENSION: ${{ inputs.extension }}
+        DEPENDENCIES: ${{ inputs.dependencies }}
+        SETTINGS: ${{ inputs.settings }}
+      run: |
+        mw_commit=$(git ls-remote --exit-code https://github.com/wikimedia/mediawiki "refs/heads/$MW_VERSION" | cut -f1)
+        dependency_commits=$(for dependency in $DEPENDENCIES; do
+          git ls-remote --exit-code "https://github.com/wikimedia/mediawiki-extensions-$dependency" "refs/heads/$MW_VERSION" | cut -f1
+        done)
+        php_version=$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;')
+        hash=$(printf '%s\n' "$mw_commit" "$dependency_commits" "$EXTENSION" "$SETTINGS" \
+          | cat - "$GITHUB_ACTION_PATH/installMediaWiki.sh" | sha256sum | cut -c1-16)
+        echo "key=setup-mediawiki-$MW_VERSION-php$php_version-$hash" >>"$GITHUB_OUTPUT"
+
+    - name: Restore MediaWiki
+      id: cache
+      uses: actions/cache/restore@v6
       with:
-        path: ~/.composer/cache
-        key: composer-cache
+        path: mediawiki
+        key: ${{ steps.cache-key.outputs.key }}
 
     - name: Install MediaWiki
-      if: steps.cache-mediawiki.outputs.cache-hit != 'true'
-      working-directory: ~
-      run: bash ${{ github.action_path }}/installMediaWiki.sh ${{ inputs.version }} ${{ inputs.extension }}
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        MW_VERSION: ${{ inputs.mw-version }}
+        EXTENSION: ${{ inputs.extension }}
+        DEPENDENCIES: ${{ inputs.dependencies }}
+        SETTINGS: ${{ inputs.settings }}
+      run: bash "$GITHUB_ACTION_PATH/installMediaWiki.sh"
+
+    - name: Cache MediaWiki
+      if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: mediawiki
+        key: ${{ steps.cache-key.outputs.key }}
+
+    - name: Check out ${{ inputs.extension }}
+      uses: actions/checkout@v6
+      with:
+        path: mediawiki/extensions/${{ inputs.extension }}
+
+    - name: Install Composer dependencies of ${{ inputs.extension }}
+      shell: bash
+      working-directory: mediawiki
+      run: composer update --no-interaction
